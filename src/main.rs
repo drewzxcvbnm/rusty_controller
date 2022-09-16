@@ -25,7 +25,6 @@ trait CommandExecutor {
     fn handle_waiting_command(&self, command: &str) -> ControlFlow<String>;
     fn handle_line(&mut self, line: String);
     fn handle_message(&mut self, msg: Message);
-    fn write_to_router(&mut self, msg: &str);
 }
 
 struct Controller {
@@ -51,10 +50,11 @@ impl CommandExecutor for Controller {
         let parts: Vec<&str> = command.split('_').collect();
 
         if let [x, y, z] = parts.get(1).expect("").split(':').collect::<Vec<&str>>()[..] {
-            self.write_to_router(&*format!("G1X{}Y{}Z{}", x, y, z));// Router goes to liquid
+            serial_write(&mut self.router_port, &*format!("G1X{}Y{}Z{}", x, y, z));
+            // read back G1:OK\n\r
+
             // Pump sucks in liquid
-            // Router goes to slot?
-            // Pump sucks out liquid?
+            // /1I0A<6000>O1A0
         } else {
             log::error!("Invalid liquid coordinates");
             return ControlFlow::Break("Invalid liquid coordinates".to_string());
@@ -89,13 +89,35 @@ impl CommandExecutor for Controller {
         msg.data.split(' ').try_for_each(|c| self.execute_command(c));
         return;
     }
-
-    fn write_to_router(&mut self, msg: &str) {
-        log::trace!("Writing to router: {}", msg);
-        self.router_port.write(msg.as_ref());
-    }
 }
 
+fn escape_chars(st: &str) -> String {
+    st.replace("\n", "\\n").replace("\r", "\\r")
+}
+
+fn serial_write(port: &mut Box<dyn SerialPort>, msg: &str) {
+    let port_name = port.name().unwrap();
+    log::trace!("Writing to port {}: {}", port_name, escape_chars(msg));
+    port.write(msg.as_ref());
+}
+
+fn serial_readline(port: &mut Box<dyn SerialPort>, end_delimiter: &str) -> String {
+    let mut line = String::new();
+    loop {
+        let mut buf: [u8; 1] = [0];
+        if port.bytes_to_read().unwrap() != 0 {
+            port.read(&mut buf);
+            line.push(char::from(buf[0]));
+        } else {
+            sleep(Duration::from_micros(10));
+            continue;
+        }
+        if line.ends_with(end_delimiter) {
+            log::trace!("Got {} from port {}", escape_chars(&line), port.name().unwrap());
+            return line.strip_suffix(end_delimiter).unwrap().to_string();
+        }
+    }
+}
 
 fn test_env_setup() {
     sysinfo::System::new_all()
@@ -118,20 +140,12 @@ fn main() {
         pump_port: serialport::new(PUMP_SERIAL_PORT, 9600).open().unwrap(),
         router_port: serialport::new(ROUTER_SERIAL_PORT, 9600).open().unwrap(),
     };
-    let mut line = String::new();
+    serial_write(&mut controller.router_port, "G28\n\r");
+    serial_write(&mut controller.pump_port, "/1ZR\n\r");
+    // ROUTER INIT: "G28\n\r" and then wait (10 sec)
+    // PUMP INIT: "/1ZR\n\r"
     loop {
-        let mut buf: [u8; 1] = [0];
-        if controller.application_port.bytes_to_read().unwrap() != 0 {
-            controller.application_port.read(&mut buf);
-            line.push(char::from(buf[0]));
-        } else {
-            sleep(Duration::from_micros(10));
-            continue;
-        }
-        if line.ends_with('\n') {
-            line.pop();
-            controller.handle_line(line.clone());
-            line.clear();
-        }
+        let line = serial_readline(&mut controller.application_port, "\n");
+        controller.handle_line(line)
     }
 }
