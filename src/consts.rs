@@ -1,3 +1,3 @@
 pub static USER_APPLICATION_SERIAL_PORT: &str = "/tmp/app1";
-pub static PUMP_SERIAL_PORT: &str = "/tmp/pump1";
-pub static ROUTER_SERIAL_PORT: &str = "/tmp/router1";
+pub static PUMP_SERIAL_PORT: &str = "/dev/ttyUSB1";
+pub static ROUTER_SERIAL_PORT: &str = "/dev/ttyUSB0";

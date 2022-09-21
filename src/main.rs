@@ -47,14 +47,24 @@ impl CommandExecutor for Controller {
 
     fn handle_liquid_application(&mut self, command: &str) -> ControlFlow<String> {
         log::trace!("Executing liquid application {}", command);
+        flush_port(&mut self.router_port);
+        flush_port(&mut self.pump_port);
         let parts: Vec<&str> = command.split('_').collect();
 
         if let [x, y, z] = parts.get(1).expect("").split(':').collect::<Vec<&str>>()[..] {
-            serial_write(&mut self.router_port, &*format!("G1X{}Y{}Z{}", x, y, z));
+            serial_write(&mut self.router_port, &*format!("G1X{}Y{}Z{}\r\n", x, y, z));
+            serial_readline(&mut self.router_port, "\r\n");
             // read back G1:OK\n\r
 
             // Pump sucks in liquid
-            // /1I0A<6000>O1A0
+            // serial_write(&mut self.pump_port, &*format!("/1gI1A12000O3A0G3R\r\n"));
+            serial_readline(&mut self.router_port, "\r\n");
+            let vol: u64 = parts.get(3)
+                .and_then(|v| v.parse().ok())
+                .map(microliter_to_pumpunit)
+                .unwrap();
+            serial_write(&mut self.pump_port, &*format!("/1I1A{}O2A0R\r\n", vol));
+            serial_readline(&mut self.router_port, "\r\n");
         } else {
             log::error!("Invalid liquid coordinates");
             return ControlFlow::Break("Invalid liquid coordinates".to_string());
@@ -101,6 +111,25 @@ fn serial_write(port: &mut Box<dyn SerialPort>, msg: &str) {
     port.write(msg.as_ref());
 }
 
+fn microliter_to_pumpunit(microliters: u64) -> u64 {
+    let res = microliters * 24;
+    if (res > 12000) {
+        log::error!("Calculated pump units over 12000")
+    }
+    res
+}
+
+fn flush_port(port: &mut Box<dyn SerialPort>) {
+    loop {
+        let mut buf: [u8; 1] = [0];
+        if port.bytes_to_read().unwrap() != 0 {
+            port.read(&mut buf);
+        } else {
+            return;
+        }
+    }
+}
+
 fn serial_readline(port: &mut Box<dyn SerialPort>, end_delimiter: &str) -> String {
     let mut line = String::new();
     loop {
@@ -125,10 +154,10 @@ fn test_env_setup() {
         .for_each(|p| { p.kill(); });
     Command::new("socat").args(["-d", "-d", "pty,raw,echo=1,link=/tmp/app1", "pty,raw,echo=1,link=/tmp/app2"])
         .spawn().ok();
-    Command::new("socat").args(["-d", "-d", "pty,raw,echo=1,link=/tmp/pump1", "pty,raw,echo=1,link=/tmp/pump2"])
-        .spawn().ok();
-    Command::new("socat").args(["-d", "-d", "pty,raw,echo=1,link=/tmp/router1", "pty,raw,echo=1,link=/tmp/router2"])
-        .spawn().ok();
+    // Command::new("socat").args(["-d", "-d", "pty,raw,echo=1,link=/tmp/pump1", "pty,raw,echo=1,link=/tmp/pump2"])
+    //     .spawn().ok();
+    // Command::new("socat").args(["-d", "-d", "pty,raw,echo=1,link=/tmp/router1", "pty,raw,echo=1,link=/tmp/router2"])
+    //     .spawn().ok();
     sleep(Duration::from_secs(1));
 }
 
@@ -138,10 +167,14 @@ fn main() {
     let mut controller = Controller {
         application_port: serialport::new(USER_APPLICATION_SERIAL_PORT, 9600).open().unwrap(),
         pump_port: serialport::new(PUMP_SERIAL_PORT, 9600).open().unwrap(),
-        router_port: serialport::new(ROUTER_SERIAL_PORT, 9600).open().unwrap(),
+        router_port: serialport::new(ROUTER_SERIAL_PORT, 115200).open().unwrap(),
     };
-    serial_write(&mut controller.router_port, "G28\n\r");
-    serial_write(&mut controller.pump_port, "/1ZR\n\r");
+    flush_port(&mut controller.router_port);
+    sleep(Duration::from_secs(5));
+    serial_readline(&mut controller.router_port, "\r\n"); // read setup done
+    serial_write(&mut controller.router_port, "G28\r\n");
+    serial_write(&mut controller.pump_port, "/1ZR\r\n");
+    serial_readline(&mut controller.router_port, "\r\n");
     // ROUTER INIT: "G28\n\r" and then wait (10 sec)
     // PUMP INIT: "/1ZR\n\r"
     loop {
