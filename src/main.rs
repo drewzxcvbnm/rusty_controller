@@ -52,26 +52,38 @@ impl CommandExecutor for Controller {
         let parts: Vec<&str> = command.split('_').collect();
 
         if let [x, y, z] = parts.get(1).expect("").split(':').collect::<Vec<&str>>()[..] {
-            serial_write(&mut self.router_port, &*format!("G1X{}Y{}Z{}\r\n", x, y, z));
+            serial_write(&mut self.router_port, &*format!("G1X{}Y{}Z-{}\r\n", x, y, z));
             serial_readline(&mut self.router_port, "\r\n");
             // read back G1:OK\n\r
 
-            // Pump sucks in liquid
-            // serial_write(&mut self.pump_port, &*format!("/1gI1A12000O3A0G3R\r\n"));
-            // serial_readline(&mut self.router_port, "\r\n");
             let vol: u64 = parts.get(3)
                 .and_then(|v| v.parse().ok())
                 .map(microliter_to_pumpunit)
                 .unwrap();
 
+            log::trace!("Taking water");
             serial_write(&mut self.pump_port, &*format!("/1I1A{}O2A0R\r\n", vol));
             sleep(Duration::from_secs(4));
 
             serial_write(&mut self.router_port, &*format!("G1X{}Y{}Z0\r\n", x, y));
             serial_readline(&mut self.router_port, "\r\n");
 
-            serial_write(&mut self.pump_port, &*format!("/1gI5A{}O2A0G4R\r\n", vol));
-            sleep(Duration::from_secs(4*4));
+            log::trace!("Pumping liquid");
+            serial_write(&mut self.pump_port, &*format!("/1gI1A12000O2A0G4R\r\n"));
+            sleep(Duration::from_secs(6*4));
+            log::trace!("Done waiting for liquid");
+
+            // Water cleaning
+            log::trace!("Starting water cleaning");
+            serial_write(&mut self.router_port, &*format!("G1X227Y152Z-20\r\n"));
+            serial_readline(&mut self.router_port, "\r\n");
+            
+            log::trace!("Pumping water");
+            serial_write(&mut self.pump_port, &*format!("/1gI4A12000O1A0G4R\r\n"));
+            sleep(Duration::from_secs(7*4));
+            log::trace!("Pumping Air");
+            serial_write(&mut self.pump_port, &*format!("/1gI5A12000O1A0G4R\r\n"));
+            sleep(Duration::from_secs(7*4));
 
         } else {
             log::error!("Invalid liquid coordinates");
