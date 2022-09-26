@@ -1,0 +1,4 @@
+application_port_path = "/tmp/app1"
+pump_port_path = "/dev/ttyUSB0"
+router_port_path = "/dev/ttyUSB1"
+constant_cleaning = false

@@ -13,3 +13,6 @@ log = "0.4.17"
 simple_logger = "2.2.0"
 sysinfo = "0.25.1"
 termios = "0.3.3"
+serde = { version = "1.0.145", features = ["derive"] }
+toml = "0.5.9"
+lazy_static = "1.4.0"
