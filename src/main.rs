@@ -25,7 +25,7 @@ struct ControllerPorts {
 
 fn router_execute(router_port: &mut Box<dyn SerialPort>, command: &str) -> ControlFlow<String> {
     serial_write(router_port, command);
-    if serial_readline(router_port, "\r\n") == "G1:OK\r\n" {
+    if serial_readline(router_port, "\r\n") == "G1:OK" {
         return ControlFlow::Continue(());
     }
     ControlFlow::Break(format!("Router - error executing command: [{}]", command))
@@ -68,7 +68,7 @@ fn handle_liquid_application(ports: &mut ControllerPorts, command: &str) -> Cont
         .expect("");
     // let [x, y, z] = <[&str; 3]>::try_from(parts).ok().expect("Cannot unpack x,y,z");
 
-    router_execute(&mut ports.router_port, &*format!("G1X{}Y{}Z-{}\r\n", x, y, z));
+    router_execute(&mut ports.router_port, &*format!("G1X{}Y{}Z{}\r\n", x, y, z))?;
 
     let vol: u64 = parts.get(3)
         .and_then(|v| v.parse().ok())
@@ -76,19 +76,19 @@ fn handle_liquid_application(ports: &mut ControllerPorts, command: &str) -> Cont
         .unwrap();
 
     log::trace!("Taking water");
-    pump_execute(&mut ports.pump_port, &*format!("/1I1A{}O2A0R\r\n", vol));
-    router_execute(&mut ports.router_port, &*format!("G1X{}Y{}Z0\r\n", x, y));
+    pump_execute(&mut ports.pump_port, &*format!("/1I1A{}O2A0R\r\n", vol))?;
+    router_execute(&mut ports.router_port, &*format!("G1X{}Y{}Z0\r\n", x, y))?;
     log::trace!("Pumping liquid");
-    pump_execute(&mut ports.pump_port, &*format!("/1gI1A12000O2A0G4R\r\n"));
+    pump_execute(&mut ports.pump_port, &*format!("/1gI1A12000O2A0G4R\r\n"))?;
     if CONFIG.constant_cleaning == false {
         return ControlFlow::Continue(());
     }
     log::trace!("Starting water cleaning");
-    router_execute(&mut ports.router_port, &*format!("G1X227Y152Z-20\r\n"));
+    router_execute(&mut ports.router_port, &*format!("G1X227Y152Z-20\r\n"))?;
     log::trace!("Pumping water");
-    pump_execute(&mut ports.pump_port, &*format!("/1gI4A12000O1A0G4R\r\n"));
+    pump_execute(&mut ports.pump_port, &*format!("/1gI4A12000O1A0G4R\r\n"))?;
     log::trace!("Pumping Air");
-    pump_execute(&mut ports.pump_port, &*format!("/1gI5A12000O1A0G4R\r\n"));
+    pump_execute(&mut ports.pump_port, &*format!("/1gI5A12000O1A0G4R\r\n"))?;
     ControlFlow::Continue(())
 }
 
