@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::ops;
 use std::ops::{Add, ControlFlow};
 use std::process::Command;
 use std::thread::sleep;
@@ -65,7 +66,7 @@ fn handle_liquid_application(ports: &mut ControllerPorts, command: &str) -> Cont
         .and_then(|from| CONFIG.tube_holder_coordinates.get(&from.to_string()))
         .map(|coords| coords.split(":").collect::<Vec<&str>>())
         .and_then(|coords| <[&str; 3]>::try_from(coords).ok())
-        .expect("");
+        .expect(format!("Couldn't find x/y/z coordinates from command: {}", command).as_str());
     // let [x, y, z] = <[&str; 3]>::try_from(parts).ok().expect("Cannot unpack x,y,z");
 
     router_execute(&mut ports.router_port, &*format!("G1X{}Y{}Z{}\r\n", x, y, z))?;
@@ -116,8 +117,10 @@ fn handle_message(ports: &mut ControllerPorts, msg: Message) {
     if msg.channel != 4 {
         return;
     }
-    msg.data.split(' ').try_for_each(|c| execute_command(ports, c));
-    return;
+    match msg.data.split(' ').try_for_each(|c| execute_command(ports, c)) {
+        ControlFlow::Continue(_) => log::info!("Executed command successfully"),
+        ControlFlow::Break(e) => log::error!("ERROR: {}", escape_chars(e.as_str()))
+    }
 }
 
 fn escape_chars(st: &str) -> String {
