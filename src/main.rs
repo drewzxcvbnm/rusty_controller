@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::ops::{Add, ControlFlow};
 use std::process::Command;
@@ -60,8 +61,12 @@ fn handle_liquid_application(ports: &mut ControllerPorts, command: &str) -> Cont
     flush_port(&mut ports.router_port);
     flush_port(&mut ports.pump_port);
     let parts: Vec<&str> = command.split('_').collect();
-    let v = parts.get(1).expect("").split(":").collect::<Vec<&str>>();
-    let [x, y, z] = <[&str; 3]>::try_from(v).ok().expect("Cannot unpack x,y,z");
+    let [x, y, z] = parts.get(1)
+        .and_then(|from| CONFIG.tube_holder_coordinates.get(&from.to_string()))
+        .map(|coords| coords.split(":").collect::<Vec<&str>>())
+        .and_then(|coords| <[&str; 3]>::try_from(coords).ok())
+        .expect("");
+    // let [x, y, z] = <[&str; 3]>::try_from(parts).ok().expect("Cannot unpack x,y,z");
 
     router_execute(&mut ports.router_port, &*format!("G1X{}Y{}Z-{}\r\n", x, y, z));
 
