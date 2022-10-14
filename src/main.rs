@@ -35,6 +35,10 @@ fn pump_execute(pump_port: &mut Box<dyn SerialPort>, command: &str) -> ControlFl
     flush_port(pump_port);
     serial_write(pump_port, command);
     sleep(Duration::from_secs(1));
+    await_pump_availability(pump_port)
+}
+
+fn await_pump_availability(pump_port: &mut Box<dyn SerialPort>) -> ControlFlow<String> {
     loop {
         serial_write(pump_port, "/1Q29\r\n");
         let mut status = serial_readline(pump_port, "\r\n");
@@ -49,6 +53,7 @@ fn pump_execute(pump_port: &mut Box<dyn SerialPort>, command: &str) -> ControlFl
 }
 
 fn execute_command(ports: &mut ControllerPorts, command: &str) -> ControlFlow<String> {
+    await_pump_availability(&mut ports.pump_port)?;
     let command_type = command.split('_').next().expect("Cannot get command type");
     match command_type {
         "LA" => handle_liquid_application(ports, command),
@@ -82,14 +87,14 @@ fn handle_liquid_application(ports: &mut ControllerPorts, command: &str) -> Cont
     pump_execute(&mut ports.pump_port, &*format!("/1I1A{vol}O2A0R\r\n"))?;
     router_execute(&mut ports.router_port, &*format!("G1X{x}Y{y}Z0\r\n"))?;
     log::trace!("Pumping liquid");
-    pump_execute(&mut ports.pump_port, &*format!("/1gI1A12000O2A0G4R\r\n"))?;
+    pump_execute(&mut ports.pump_port, &*format!("/1gI1A12000O2A0G6R\r\n"))?;
     if CONFIG.constant_cleaning == false {
         return ControlFlow::Continue(());
     }
     log::trace!("Starting water cleaning");
     router_execute(&mut ports.router_port, "G1X227Y152Z-20\r\n")?;
     log::trace!("Pumping water");
-    pump_execute(&mut ports.pump_port, "/1gI4A12000O1A0G4R\r\n")?;
+    pump_execute(&mut ports.pump_port, "/1gI4A12000O1A0G2R\r\n")?;
     log::trace!("Pumping Air");
     pump_execute(&mut ports.pump_port, "/1gI5A12000O1A0G4R\r\n")?;
     ControlFlow::Continue(())
