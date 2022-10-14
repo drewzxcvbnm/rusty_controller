@@ -4,6 +4,7 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 
+use log::log;
 use serialport::SerialPort;
 use simple_logger::SimpleLogger;
 use sysinfo::{ProcessExt, SystemExt};
@@ -31,16 +32,19 @@ fn router_execute(router_port: &mut Box<dyn SerialPort>, command: &str) -> Contr
 }
 
 fn pump_execute(pump_port: &mut Box<dyn SerialPort>, command: &str) -> ControlFlow<String> {
+    flush_port(pump_port);
     serial_write(pump_port, command);
+    sleep(Duration::from_secs(1));
     loop {
-        serial_write(pump_port, "/1Q29");
-        let status = serial_readline(pump_port, "\r\n"); //TODO: check correct end delimiter
-        let is_free = status.as_bytes().get(2)
-            .map_or(false, |b| (b & 0x20) == 0x20);
+        serial_write(pump_port, "/1Q29\r\n");
+        let mut status = serial_readline(pump_port, "\r\n");
+        status.remove(0);
+        status.pop();
+        let is_free = status == "/0c";
         if is_free {
             return ControlFlow::Continue(());
         }
-        sleep(Duration::from_millis(500));
+        sleep(Duration::from_secs(1));
     }
 }
 
@@ -128,7 +132,7 @@ fn escape_chars(st: &str) -> String {
 fn serial_write(port: &mut Box<dyn SerialPort>, msg: &str) {
     let port_name = port.name().unwrap();
     log::trace!("Writing to port {}: {}", port_name, escape_chars(msg));
-    port.write(msg.as_ref());
+    port.write(msg.as_ref()).map_err(|e| log::error!("FAILED WRITE: {}", e));
 }
 
 fn microliter_to_pumpunit(microliters: u64) -> u64 {
@@ -162,7 +166,7 @@ fn serial_readline(port: &mut Box<dyn SerialPort>, end_delimiter: &str) -> Strin
             continue;
         }
         if line.ends_with(end_delimiter) {
-            log::trace!("Got {} from port {}", escape_chars(&line), port.name().unwrap());
+            log::trace!("Got [{}] from port {}", escape_chars(&line), port.name().unwrap());
             return line.strip_suffix(end_delimiter).unwrap().to_string();
         }
     }
