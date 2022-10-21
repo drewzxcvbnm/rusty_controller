@@ -17,10 +17,21 @@ mod macros;
 mod message;
 mod config;
 
-struct ControllerPorts {
+struct Controller {
     router_port: Box<dyn SerialPort>,
     pump_port: Box<dyn SerialPort>,
     application_port: Box<dyn SerialPort>,
+    slot_occupancy: u64,
+}
+
+impl Controller {
+    pub fn router_execute(&mut self, command: &str) -> ControlFlow<String> {
+        router_execute(&mut self.router_port, command)
+    }
+
+    pub fn pump_execute(&mut self, command: &str) -> ControlFlow<String> {
+        router_execute(&mut self.pump_port, command)
+    }
 }
 
 fn router_execute(router_port: &mut Box<dyn SerialPort>, command: &str) -> ControlFlow<String> {
@@ -52,7 +63,7 @@ fn await_pump_availability(pump_port: &mut Box<dyn SerialPort>) -> ControlFlow<S
     }
 }
 
-fn execute_command(ports: &mut ControllerPorts, command: &str) -> ControlFlow<String> {
+fn execute_command(ports: &mut Controller, command: &str) -> ControlFlow<String> {
     await_pump_availability(&mut ports.pump_port)?;
     let command_type = command.split('_').next().expect("Cannot get command type");
     match command_type {
@@ -64,39 +75,43 @@ fn execute_command(ports: &mut ControllerPorts, command: &str) -> ControlFlow<St
     }
 }
 
-fn handle_liquid_application(ports: &mut ControllerPorts, command: &str) -> ControlFlow<String> {
+fn handle_liquid_application(controller: &mut Controller, command: &str) -> ControlFlow<String> {
     log::trace!("Executing liquid application {}", command);
-    flush_port(&mut ports.router_port);
-    flush_port(&mut ports.pump_port);
+    flush_port(&mut controller.router_port);
+    flush_port(&mut controller.pump_port);
+    if controller.slot_occupancy > 0 {
+        let vol = microliter_to_pumpunit(controller.slot_occupancy);
+        controller.pump_execute(&*format!("/2I1A{vol}O2A0R\r\n"))?;
+    }
+
     let parts: Vec<&str> = command.split('_').collect();
     let [x, y, z] = parts.get(1)
         .and_then(|from| CONFIG.tube_holder_coordinates.get(&from.to_string()))
         .map(|coords| coords.split(":").collect::<Vec<&str>>())
         .and_then(|coords| <[&str; 3]>::try_from(coords).ok())
         .expect(format!("Couldn't find x/y/z coordinates from command: {command}").as_str());
-    // let [x, y, z] = <[&str; 3]>::try_from(parts).ok().expect("Cannot unpack x,y,z");
 
-    router_execute(&mut ports.router_port, &*format!("G1X{x}Y{y}Z{z}\r\n"))?;
-
-    let vol: u64 = parts.get(3)
+    controller.router_execute(&*format!("G1X{x}Y{y}Z{z}\r\n"))?;
+    let vol_microliter = parts.get(3)
         .and_then(|v| v.parse().ok())
-        .map(microliter_to_pumpunit)
         .unwrap();
+    let vol: u64 = microliter_to_pumpunit(vol_microliter);
 
-    log::trace!("Taking water");
-    pump_execute(&mut ports.pump_port, &*format!("/1I1A{vol}O2A0R\r\n"))?;
-    router_execute(&mut ports.router_port, &*format!("G1X{x}Y{y}Z0\r\n"))?;
+    log::trace!("Taking liquid");
+    controller.pump_execute(&*format!("/1I1A{vol}O2A0R\r\n"))?;
+    controller.router_execute(&*format!("G1X{x}Y{y}Z0\r\n"))?;
     log::trace!("Pumping liquid");
-    pump_execute(&mut ports.pump_port, &*format!("/1gI1A12000O2A0G6R\r\n"))?;
+    controller.pump_execute(&*format!("/1gI1A12000O2A0G6R\r\n"))?;
+    controller.slot_occupancy = vol_microliter;
     if CONFIG.constant_cleaning == false {
         return ControlFlow::Continue(());
     }
     log::trace!("Starting water cleaning");
-    router_execute(&mut ports.router_port, "G1X227Y152Z-20\r\n")?;
+    controller.router_execute("G1X227Y152Z-20\r\n")?;
     log::trace!("Pumping water");
-    pump_execute(&mut ports.pump_port, "/1gI4A12000O1A0G2R\r\n")?;
+    controller.pump_execute("/1gI4A12000O1A0G2R\r\n")?;
     log::trace!("Pumping Air");
-    pump_execute(&mut ports.pump_port, "/1gI5A12000O1A0G4R\r\n")?;
+    controller.pump_execute("/1gI5A12000O1A0G4R\r\n")?;
     ControlFlow::Continue(())
 }
 
@@ -110,7 +125,7 @@ fn handle_waiting_command(command: &str) -> ControlFlow<String> {
     ControlFlow::Continue(())
 }
 
-fn handle_line(ports: &mut ControllerPorts, line: String) {
+fn handle_line(ports: &mut Controller, line: String) {
     let msg = message::parse_to_message(line.clone());
     match msg {
         Some(v) => handle_message(ports, v),
@@ -119,7 +134,7 @@ fn handle_line(ports: &mut ControllerPorts, line: String) {
 }
 
 
-fn handle_message(ports: &mut ControllerPorts, msg: Message) {
+fn handle_message(ports: &mut Controller, msg: Message) {
     log::trace!("Parsed message: {}, {}, {}", msg.channel, msg.data, msg.crc);
     if msg.channel != 4 {
         return;
@@ -194,21 +209,23 @@ fn test_env_setup() {
 fn main() {
     SimpleLogger::new().init().unwrap();
     test_env_setup();
-    let mut ports = ControllerPorts {
+    let mut controller = Controller {
         application_port: serialport::new(CONFIG.application_port_path.as_str(), 9600).open().unwrap(),
         pump_port: serialport::new(CONFIG.pump_port_path.as_str(), 9600).open().unwrap(),
         router_port: serialport::new(CONFIG.router_port_path.as_str(), 115200).open().unwrap(),
+        slot_occupancy: 0,
     };
-    flush_port(&mut ports.router_port);
+
+    flush_port(&mut controller.router_port);
     sleep(Duration::from_secs(5));
-    serial_readline(&mut ports.router_port, "\r\n"); // read setup done
-    serial_write(&mut ports.router_port, "G28\r\n");
-    serial_write(&mut ports.pump_port, "/1ZR\r\n");
-    serial_readline(&mut ports.router_port, "\r\n");
+    serial_readline(&mut controller.router_port, "\r\n"); // read setup done
+    serial_write(&mut controller.router_port, "G28\r\n");
+    serial_write(&mut controller.pump_port, "/1ZR\r\n");
+    serial_readline(&mut controller.router_port, "\r\n");
     // ROUTER INIT: "G28\n\r" and then wait (10 sec)
     // PUMP INIT: "/1ZR\n\r"
     loop {
-        let line = serial_readline(&mut ports.application_port, "\n");
-        handle_line(&mut ports, line)
+        let line = serial_readline(&mut controller.application_port, "\n");
+        handle_line(&mut controller, line)
     }
 }
