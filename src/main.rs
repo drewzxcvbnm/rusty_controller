@@ -26,27 +26,25 @@ struct Controller {
 
 impl Controller {
     pub fn router_execute(&mut self, command: &str) -> ControlFlow<String> {
-        router_execute(&mut self.router_port, command)
+        serial_write(&mut self.router_port, command);
+        if serial_readline(&mut self.router_port, "\r\n") == "G1:OK" {
+            return ControlFlow::Continue(());
+        }
+        ControlFlow::Break(format!("Router - error executing command: [{command}]"))
     }
 
     pub fn pump_execute(&mut self, command: &str) -> ControlFlow<String> {
-        router_execute(&mut self.pump_port, command)
+        flush_port(&mut self.pump_port);
+        serial_write(&mut self.pump_port, command);
+        sleep(Duration::from_secs(1));
+        await_pump_availability(&mut self.pump_port)
     }
-}
 
-fn router_execute(router_port: &mut Box<dyn SerialPort>, command: &str) -> ControlFlow<String> {
-    serial_write(router_port, command);
-    if serial_readline(router_port, "\r\n") == "G1:OK" {
+    pub fn pump_execute_async(&mut self, command: &str) -> ControlFlow<String> {
+        flush_port(&mut self.pump_port);
+        serial_write(&mut self.pump_port, command);
         return ControlFlow::Continue(());
     }
-    ControlFlow::Break(format!("Router - error executing command: [{command}]"))
-}
-
-fn pump_execute(pump_port: &mut Box<dyn SerialPort>, command: &str) -> ControlFlow<String> {
-    flush_port(pump_port);
-    serial_write(pump_port, command);
-    sleep(Duration::from_secs(1));
-    await_pump_availability(pump_port)
 }
 
 fn await_pump_availability(pump_port: &mut Box<dyn SerialPort>) -> ControlFlow<String> {
@@ -69,11 +67,19 @@ fn execute_command(ports: &mut Controller, command: &str) -> ControlFlow<String>
     match command_type {
         "LA" => handle_liquid_application(ports, command),
         "W" => handle_waiting_command(command),
-        "TC" => ControlFlow::Break("Unimplemented Command TC".to_string()),
-        "BTC" => ControlFlow::Break("Unimplemented Command BTC".to_string()),
+        "TC" => {
+            log::error!("PRETENDING TO TEMP CHANGE");
+            ControlFlow::Continue(())
+        }
+        "BTC" => {
+            log::error!("PRETENDING TO TEMP CHANGE");
+            ControlFlow::Continue(())
+        }
         _ => ControlFlow::Break("Unknown Command ".to_string().add(command))
     }
 }
+
+fn handle_temperature_change(controller: &Controller, command: &str) {}
 
 fn handle_liquid_application(controller: &mut Controller, command: &str) -> ControlFlow<String> {
     log::trace!("Executing liquid application {}", command);
@@ -82,26 +88,32 @@ fn handle_liquid_application(controller: &mut Controller, command: &str) -> Cont
     if controller.slot_occupancy > 0 {
         let vol = microliter_to_pumpunit(controller.slot_occupancy);
         controller.pump_execute(&*format!("/2I1A{vol}O2A0R\r\n"))?;
+        controller.slot_occupancy = 0;
     }
 
     let parts: Vec<&str> = command.split('_').collect();
-    let [x, y, z] = parts.get(1)
-        .and_then(|from| CONFIG.tube_holder_coordinates.get(&from.to_string()))
+    let from = unwrap_option!(parts.get(1), "Cannot deduce 'from' part".to_string());
+    let [x, y, z] = CONFIG.tube_holder_coordinates.get(&from.to_string())
         .map(|coords| coords.split(":").collect::<Vec<&str>>())
         .and_then(|coords| <[&str; 3]>::try_from(coords).ok())
         .expect(format!("Couldn't find x/y/z coordinates from command: {command}").as_str());
-
-    controller.router_execute(&*format!("G1X{x}Y{y}Z{z}\r\n"))?;
+    let from_number = unwrap_result!(from.parse::<u64>());
     let vol_microliter = parts.get(3)
         .and_then(|v| v.parse().ok())
         .unwrap();
+    if from_number > 33 {
+        return handle_external_liquid_application(controller, from_number, vol_microliter);
+    }
+
+    controller.router_execute(&*format!("G1X{x}Y{y}Z{z}\r\n"))?;
     let vol: u64 = microliter_to_pumpunit(vol_microliter);
 
     log::trace!("Taking liquid");
     controller.pump_execute(&*format!("/1I1A{vol}O2A0R\r\n"))?;
     controller.router_execute(&*format!("G1X{x}Y{y}Z0\r\n"))?;
     log::trace!("Pumping liquid");
-    controller.pump_execute(&*format!("/1gI1A12000O2A0G6R\r\n"))?;
+    // controller.pump_execute_async("/2gI1A12000O2A0G7R\r\n")?; // Using other pump to pump out liquid from slot
+    controller.pump_execute(&*format!("/1gI1A12000O2A0G6R\r\n"))?; // pumping to slot
     controller.slot_occupancy = vol_microliter;
     if CONFIG.constant_cleaning == false {
         return ControlFlow::Continue(());
@@ -112,6 +124,20 @@ fn handle_liquid_application(controller: &mut Controller, command: &str) -> Cont
     controller.pump_execute("/1gI4A12000O1A0G2R\r\n")?;
     log::trace!("Pumping Air");
     controller.pump_execute("/1gI5A12000O1A0G4R\r\n")?;
+    ControlFlow::Continue(())
+}
+
+fn handle_external_liquid_application(controller: &mut Controller, from: u64, vol: u64) -> ControlFlow<String> {
+    let required_channel = match from {
+        34 => 6,
+        35 => 7,
+        36 => 4,
+        _ => return ControlFlow::Break("Developer is dumb".to_string())
+    };
+    let pump_vol = microliter_to_pumpunit(vol);
+    controller.pump_execute(&*format!("/1I{required_channel}A{pump_vol}O1A0R\r\n"))?;
+    // controller.pump_execute_async("/2gI1A12000O2A0G3R\r\n")?;
+    controller.pump_execute("/1gI4A12000O1A0G2R\r\n")?;
     ControlFlow::Continue(())
 }
 
@@ -220,7 +246,8 @@ fn main() {
     sleep(Duration::from_secs(5));
     serial_readline(&mut controller.router_port, "\r\n"); // read setup done
     serial_write(&mut controller.router_port, "G28\r\n");
-    serial_write(&mut controller.pump_port, "/1ZR\r\n");
+    serial_write(&mut controller.pump_port, "/1ZgI4A12000O3A0G3R\r\n");
+    serial_write(&mut controller.pump_port, "/2ZR\r\n");
     serial_readline(&mut controller.router_port, "\r\n");
     // ROUTER INIT: "G28\n\r" and then wait (10 sec)
     // PUMP INIT: "/1ZR\n\r"

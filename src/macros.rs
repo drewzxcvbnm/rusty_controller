@@ -3,13 +3,13 @@ macro_rules! unwrap_option {
     ( $e:expr ) => {
         match $e {
             Some(x) => x,
-            None => return ControlFlow::Break("Failed to execute command"),
+            None => return ControlFlow::Break("Failed to execute command".to_string()),
         }
     };
-    ( $e:expr, $msg:literal ) => {
+    ( $e:expr, $msg:expr ) => {
         match $e {
             Some(x) => x,
-            None => return ControlFlow::Break(msg),
+            None => return ControlFlow::Break($msg),
         }
     }
 }
@@ -19,13 +19,13 @@ macro_rules! unwrap_result {
     ( $e:expr ) => {
         match $e {
             Ok(x) => x,
-            Err(_) => return ControlFlow::Break("Failed to execute command"),
+            Err(_) => return ControlFlow::Break("Failed to execute command".to_string()),
         }
     };
-    ( $e:expr, $msg:literal ) => {
+    ( $e:expr, $msg:expr ) => {
         match $e {
             Ok(x) => x,
-            Err(_) => return ControlFlow::Break(msg),
+            Err(_) => return ControlFlow::Break($msg),
         }
     }
 }
