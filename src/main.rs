@@ -12,10 +12,12 @@ use sysinfo::{ProcessExt, SystemExt};
 use message::Message;
 
 use crate::config::CONFIG;
+use crate::port_operations::{flush_port, serial_readline, serial_write, unlogged_serial_readline, unlogged_serial_write};
 
 mod macros;
 mod message;
 mod config;
+mod port_operations;
 
 struct Controller {
     router_port: Box<dyn SerialPort>,
@@ -49,8 +51,8 @@ impl Controller {
 
 fn await_pump_availability(pump_port: &mut Box<dyn SerialPort>) -> ControlFlow<String> {
     loop {
-        serial_write(pump_port, "/1Q29\r\n");
-        let mut status = serial_readline(pump_port, "\r\n");
+        unlogged_serial_write(pump_port, "/1Q29\r\n");
+        let mut status = unlogged_serial_readline(pump_port, "\r\n");
         status.remove(0);
         status.pop();
         let is_free = status == "/0c";
@@ -68,11 +70,11 @@ fn execute_command(ports: &mut Controller, command: &str) -> ControlFlow<String>
         "LA" => handle_liquid_application(ports, command),
         "W" => handle_waiting_command(command),
         "TC" => {
-            log::error!("PRETENDING TO TEMP CHANGE");
+            log::error!("PRETENDING TO DO TEMP CHANGE");
             ControlFlow::Continue(())
         }
         "BTC" => {
-            log::error!("PRETENDING TO TEMP CHANGE");
+            log::error!("PRETENDING TO DO TEMP CHANGE");
             ControlFlow::Continue(())
         }
         _ => ControlFlow::Break("Unknown Command ".to_string().add(command))
@@ -85,9 +87,11 @@ fn handle_liquid_application(controller: &mut Controller, command: &str) -> Cont
     log::trace!("Executing liquid application {}", command);
     flush_port(&mut controller.router_port);
     flush_port(&mut controller.pump_port);
+    log::trace!("Slot occupancy - {}", controller.slot_occupancy);
     if controller.slot_occupancy > 0 {
+        log::trace!("Pumping liquid out of slot");
         let vol = microliter_to_pumpunit(controller.slot_occupancy);
-        controller.pump_execute(&*format!("/2I1A{vol}O2A0R\r\n"))?;
+        controller.pump_execute(&*format!("/2gI1A12000O2A0G4R\r\n"))?;
         controller.slot_occupancy = 0;
     }
 
@@ -175,47 +179,12 @@ fn escape_chars(st: &str) -> String {
     st.replace("\n", "\\n").replace("\r", "\\r")
 }
 
-fn serial_write(port: &mut Box<dyn SerialPort>, msg: &str) {
-    let port_name = port.name().unwrap();
-    log::trace!("Writing to port {}: {}", port_name, escape_chars(msg));
-    port.write(msg.as_ref()).map_err(|e| log::error!("FAILED WRITE: {}", e));
-}
-
 fn microliter_to_pumpunit(microliters: u64) -> u64 {
     let res = microliters * 24;
     if res > 12000 {
         log::error!("Calculated pump units over 12000")
     }
     res
-}
-
-fn flush_port(port: &mut Box<dyn SerialPort>) {
-    loop {
-        let mut buf: [u8; 1] = [0];
-        if port.bytes_to_read().unwrap() != 0 {
-            port.read(&mut buf);
-        } else {
-            return;
-        }
-    }
-}
-
-fn serial_readline(port: &mut Box<dyn SerialPort>, end_delimiter: &str) -> String {
-    let mut line = String::new();
-    loop {
-        let mut buf: [u8; 1] = [0];
-        if port.bytes_to_read().unwrap() != 0 {
-            port.read(&mut buf);
-            line.push(char::from(buf[0]));
-        } else {
-            sleep(Duration::from_micros(10));
-            continue;
-        }
-        if line.ends_with(end_delimiter) {
-            log::trace!("Got [{}] from port {}", escape_chars(&line), port.name().unwrap());
-            return line.strip_suffix(end_delimiter).unwrap().to_string();
-        }
-    }
 }
 
 fn test_env_setup() {
