@@ -117,7 +117,7 @@ fn handle_liquid_application(controller: &mut Controller, command: &str) -> Cont
     controller.router_execute(&*format!("G1X{x}Y{y}Z0\r\n"))?;
     log::trace!("Pumping liquid");
     // controller.pump_execute_async("/2gI1A12000O2A0G7R\r\n")?; // Using other pump to pump out liquid from slot
-    controller.pump_execute(&*format!("/1gI1A12000O2A0G6R\r\n"))?; // pumping to slot
+    controller.pump_execute(&*format!("/1gI1A12000O2A0G12R\r\n"))?; // pumping to slot
     controller.slot_occupancy = vol_microliter;
     if CONFIG.constant_cleaning == false {
         return ControlFlow::Continue(());
@@ -133,9 +133,9 @@ fn handle_liquid_application(controller: &mut Controller, command: &str) -> Cont
 
 fn handle_external_liquid_application(controller: &mut Controller, from: u64, vol: u64) -> ControlFlow<String> {
     let required_channel = match from {
-        34 => 6,
+        34 => 4,
         35 => 7,
-        36 => 4,
+        36 => 6,
         _ => return ControlFlow::Break("Developer is dumb".to_string())
     };
     let pump_vol = microliter_to_pumpunit(vol);
