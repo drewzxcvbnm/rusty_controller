@@ -69,10 +69,7 @@ fn execute_command(ports: &mut Controller, command: &str) -> ControlFlow<String>
     match command_type {
         "LA" => handle_liquid_application(ports, command),
         "W" => handle_waiting_command(command),
-        "TC" => {
-            log::error!("PRETENDING TO DO TEMP CHANGE");
-            ControlFlow::Continue(())
-        }
+        "TC" => handle_temperature_change(ports, command),
         "BTC" => {
             log::error!("PRETENDING TO DO TEMP CHANGE");
             ControlFlow::Continue(())
@@ -81,7 +78,12 @@ fn execute_command(ports: &mut Controller, command: &str) -> ControlFlow<String>
     }
 }
 
-fn handle_temperature_change(controller: &Controller, command: &str) {}
+fn handle_temperature_change(controller: &mut Controller, command: &str) -> ControlFlow<String> {
+    let target_temp = *command.split('_').collect::<Vec<&str>>().get(1)
+        .expect(&*format!("Cannot deduce target temperature from {command}"));
+    serial_write(&mut controller.router_port, &*format!("M104S{target_temp}"));
+    ControlFlow::Continue(())
+}
 
 fn handle_liquid_application(controller: &mut Controller, command: &str) -> ControlFlow<String> {
     log::trace!("Executing liquid application {}", command);
@@ -97,10 +99,6 @@ fn handle_liquid_application(controller: &mut Controller, command: &str) -> Cont
 
     let parts: Vec<&str> = command.split('_').collect();
     let from = unwrap_option!(parts.get(1), "Cannot deduce 'from' part".to_string());
-    let [x, y, z] = CONFIG.tube_holder_coordinates.get(&from.to_string())
-        .map(|coords| coords.split(":").collect::<Vec<&str>>())
-        .and_then(|coords| <[&str; 3]>::try_from(coords).ok())
-        .expect(format!("Couldn't find x/y/z coordinates from command: {command}").as_str());
     let from_number = unwrap_result!(from.parse::<u64>());
     let vol_microliter = parts.get(3)
         .and_then(|v| v.parse().ok())
@@ -108,6 +106,10 @@ fn handle_liquid_application(controller: &mut Controller, command: &str) -> Cont
     if from_number > 33 {
         return handle_external_liquid_application(controller, from_number, vol_microliter);
     }
+    let [x, y, z] = CONFIG.tube_holder_coordinates.get(&from.to_string())
+        .map(|coords| coords.split(":").collect::<Vec<&str>>())
+        .and_then(|coords| <[&str; 3]>::try_from(coords).ok())
+        .expect(format!("Couldn't find x/y/z coordinates from command: {command}").as_str());
 
     controller.router_execute(&*format!("G1X{x}Y{y}Z{z}\r\n"))?;
     let vol: u64 = microliter_to_pumpunit(vol_microliter);
@@ -117,13 +119,13 @@ fn handle_liquid_application(controller: &mut Controller, command: &str) -> Cont
     controller.router_execute(&*format!("G1X{x}Y{y}Z0\r\n"))?;
     log::trace!("Pumping liquid");
     // controller.pump_execute_async("/2gI1A12000O2A0G7R\r\n")?; // Using other pump to pump out liquid from slot
-    controller.pump_execute(&*format!("/1gI1A12000O2A0G12R\r\n"))?; // pumping to slot
+    controller.pump_execute(&*format!("/1gI1A12000O2A0G6R\r\n"))?; // pumping to slot
     controller.slot_occupancy = vol_microliter;
     if CONFIG.constant_cleaning == false {
         return ControlFlow::Continue(());
     }
     log::trace!("Starting water cleaning");
-    controller.router_execute("G1X227Y152Z-20\r\n")?;
+    controller.router_execute("G1X315Y142Z-20\r\n")?;
     log::trace!("Pumping water");
     controller.pump_execute("/1gI4A12000O1A0G2R\r\n")?;
     log::trace!("Pumping Air");
@@ -139,9 +141,8 @@ fn handle_external_liquid_application(controller: &mut Controller, from: u64, vo
         _ => return ControlFlow::Break("Developer is dumb".to_string())
     };
     let pump_vol = microliter_to_pumpunit(vol);
-    controller.pump_execute(&*format!("/1I{required_channel}A{pump_vol}O1A0R\r\n"))?;
-    // controller.pump_execute_async("/2gI1A12000O2A0G3R\r\n")?;
-    controller.pump_execute("/1gI4A12000O1A0G2R\r\n")?;
+    controller.pump_execute(&*format!("/1I{required_channel}A{pump_vol}O2A0gI5A12000O2A0G3R\r\n"))?;
+    controller.slot_occupancy += vol;
     ControlFlow::Continue(())
 }
 
@@ -173,6 +174,7 @@ fn handle_message(ports: &mut Controller, msg: Message) {
         ControlFlow::Continue(_) => log::info!("Executed command successfully"),
         ControlFlow::Break(e) => log::error!("ERROR: {}", escape_chars(e.as_str()))
     }
+    serial_write(&mut ports.router_port, &*"M104F");
 }
 
 fn escape_chars(st: &str) -> String {
