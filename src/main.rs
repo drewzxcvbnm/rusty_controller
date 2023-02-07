@@ -174,7 +174,8 @@ fn handle_message(ports: &mut Controller, msg: Message) {
         ControlFlow::Continue(_) => log::info!("Executed command successfully"),
         ControlFlow::Break(e) => log::error!("ERROR: {}", escape_chars(e.as_str()))
     }
-    serial_write(&mut ports.router_port, &*"M104F");
+    serial_write(&mut ports.router_port, &*"M104F"); // sets temperature to normal
+    ports.pump_execute(&*format!("/2gI1A12000O2A0G4R\r\n")); // pump out remaining liquid
 }
 
 fn escape_chars(st: &str) -> String {
